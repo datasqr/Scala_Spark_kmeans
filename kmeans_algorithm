@@ -1,0 +1,146 @@
+import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.mllib.linalg._
+import org.apache.spark.mllib.clustering._
+import org.apache.spark.rdd.RDD
+
+import scala.reflect.ClassTag
+
+/*
+
+  Spark kmeans algorithm
+  Implementation based on book "Advanced Analytics in Spark"
+  Model input are data (label, vector[Double])
+  Model output (cluster, label, values)
+
+ */
+
+object kmeans_algorithm {
+
+  def main(args:Array[String]): Unit = {
+
+    println("test")
+
+    val sparkConf = new SparkConf()
+      .setAppName("Spark Kmeans")
+      .setMaster("local[*]") //previously it was 2
+      .set("spark.executor.memory", "10g")
+      .set("spark.driver.allowMultipleContexts", "true")
+      .setAppName(getClass.getSimpleName)
+
+    val sc = new SparkContext(sparkConf)
+
+    val rawData = sc.textFile("/path/to/folder")
+
+    //data format = matrix, column with labels
+    val rawData1 = rawData
+      .map{ x =>
+        val buffer = x.split(",").toBuffer
+        buffer.remove(0)
+        buffer.toArray
+      }
+
+    //data format - rows are values, rownames are sensor names
+    val labelsAndData = columnsToRows(rawData1)
+      .map { x =>
+        val label = x(0)
+        val vector = Vectors.dense(x.drop(1).map(_.toDouble))
+        (label, vector)
+      }
+
+    val data = labelsAndData.values.cache()
+
+//    val rawData1 = rawData
+//      .map{ x =>
+//        val buffer = x.split(",").toBuffer
+//        buffer.remove(0)
+//        buffer.toArray
+//      }
+//
+//    val data = rawData1
+//      .map(x => x.map(_.toDouble))
+//      .map(x => Vectors.dense(x))
+
+
+//    //find k
+//    (2 to 8 by 1).map(k => (k, clusteringScore(data, k))).
+//      foreach(println)
+
+    val k = 2
+
+    val kmeans = new KMeans()
+
+    kmeans.setRuns(10)
+    kmeans.setEpsilon(1.0e-6)
+    kmeans.setK(k)
+
+    val model = kmeans.run(data)
+    model.clusterCenters.foreach(println)
+
+//    val clusterLabelCount = labelsAndData.map { case (label,datum) =>
+//      val cluster = model.predict(datum)
+//      (cluster,label)
+//    }.countByValue
+//
+//    clusterLabelCount.toSeq.sorted.foreach {
+//      case ((cluster,label),count) =>
+//        println(f"$cluster%1s$label%18s$count%8s")
+//    }
+
+//    val sample = data.map(datum =>
+//      model.predict(datum) + "," + datum.toArray.take(100).mkString(",")
+//    )//.sample(false, 0.5)
+//    sample.saveAsTextFile("/path/to/folder")
+
+    val sample = labelsAndData.map(datum =>
+      model.predict(datum._2) + "," + datum._1 + "," + datum._2.toArray.take(100).mkString(",")
+    )//.sample(false, 0.5)
+    sample.saveAsTextFile("/path/to/folder")
+
+  }
+
+  def distance(a: Vector, b: Vector) =
+    math.sqrt(a.toArray.zip(b.toArray).
+      map(p => p._1 - p._2).map(d => d * d).sum)
+  def distToCentroid(datum: Vector, model: KMeansModel) = {
+    val cluster = model.predict(datum)
+    val centroid = model.clusterCenters(cluster)
+    distance(centroid, datum)
+  }
+  def clusteringScore(data: RDD[Vector], k: Int) = {
+    val kmeans = new KMeans()
+    kmeans.setK(k)
+    val model = kmeans.run(data)
+    data.map(datum => distToCentroid(datum, model)).mean()
+  }
+
+  def columnsToRows[T:ClassTag](rdd: RDD[Array[T]]): RDD[Array[T]] = {
+
+    /*
+     * The procedure to change columns to rows -> RDD[Seq[(Int, Double)]]
+     * Key is the number of column
+     */
+
+    val byColumnAndRow = rdd
+      .zipWithIndex.flatMap {
+      case (x, rowIndex) => x.zipWithIndex.map {
+        case (number, columnIndex) => columnIndex -> (rowIndex, columnIndex + 1, number)
+      }
+    }
+
+    // Build up the transposed matrix. Group and sort by column index first.
+    val byColumn = byColumnAndRow.groupByKey.sortByKey().values
+
+    // Then sort by row index.
+    val transposed = byColumn.map {
+      indexedRow => (indexedRow.toSeq.sortBy(_._1).map(x => (x._2, x._3)))
+    }
+
+    val finalRdd = transposed
+      .map(x => x.map(y => y._2))
+      .map(x => x.toArray)
+
+    finalRdd
+
+  }
+
+}
